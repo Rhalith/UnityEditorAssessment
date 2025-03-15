@@ -1,27 +1,29 @@
-using System.Collections.Generic;
-using System.Linq;
 using UnityEditor;
 using UnityEngine;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace Editor.CustomEditorTools
 {
+    /// <summary>
+    /// An Editor window that displays a list of all scene GameObjects (root + children).
+    /// Allows filtering, sorting, selecting, and editing in bulk.
+    /// </summary>
     public class GameObjectListWindow : EditorWindow
     {
+        // --- Filter/Sorting/Service ---
+        private GameObjectFilter _filter = new GameObjectFilter();
+        private SortType _sortType = SortType.AlphabeticalAz;
+        private GameObjectDataService _dataService = new GameObjectDataService();
+
+        // --- State ---
         private List<GameObject> _allObjects = new();
         private List<GameObject> _selectedObjects = new();
+
+        // --- UI ---
         private Vector2 _scrollPosition;
-        private string _searchQuery = "";
-        private bool _showInactiveObjects = true;
-        private bool _showFilters;
-        private bool _selectAllToggle;
-
-        private enum FilterMode { NoFilter, HasComponent, DoesNotHaveComponent }
-        private FilterMode _filterMeshRenderer = FilterMode.NoFilter;
-        private FilterMode _filterCollider = FilterMode.NoFilter;
-        private FilterMode _filterRigidbody = FilterMode.NoFilter;
-
-        private enum SortType { AlphabeticalAz, AlphabeticalZa, ActiveFirst, InactiveFirst, Tag, Layer }
-        private SortType _currentSort = SortType.AlphabeticalAz;
+        private bool _showFilters = false;
+        private bool _selectAllToggle = false;
 
         [MenuItem("Tools/GameObject Manager")]
         private static void OpenWindow()
@@ -31,7 +33,7 @@ namespace Editor.CustomEditorTools
 
         private void OnEnable()
         {
-            RefreshGameObjectList();
+            RefreshList();
         }
 
         private void OnGUI()
@@ -46,7 +48,7 @@ namespace Editor.CustomEditorTools
 
             if (GUILayout.Button("Refresh List", GUILayout.Height(25)))
             {
-                RefreshGameObjectList();
+                RefreshList();
             }
 
             GUILayout.Space(5);
@@ -73,11 +75,11 @@ namespace Editor.CustomEditorTools
         {
             GUILayout.BeginHorizontal();
             EditorGUILayout.LabelField("Search:", EditorStyles.boldLabel, GUILayout.Width(50));
-            string newSearchQuery = EditorGUILayout.TextField(_searchQuery);
-            if (newSearchQuery != _searchQuery)
+            string newSearch = EditorGUILayout.TextField(_filter.SearchQuery);
+            if (newSearch != _filter.SearchQuery)
             {
-                _searchQuery = newSearchQuery;
-                RefreshGameObjectList();
+                _filter.SearchQuery = newSearch;
+                RefreshList();
             }
             GUILayout.EndHorizontal();
         }
@@ -90,15 +92,15 @@ namespace Editor.CustomEditorTools
                 GUILayout.BeginVertical("box");
                 GUILayout.BeginHorizontal();
 
-                DrawFilterToggle(ref _filterMeshRenderer, "Mesh Renderer");
-                DrawFilterToggle(ref _filterCollider, "Collider");
-                DrawFilterToggle(ref _filterRigidbody, "Rigidbody");
+                DrawFilterButton(ref _filter.MeshRendererFilter, "MeshRenderer");
+                DrawFilterButton(ref _filter.ColliderFilter, "Collider");
+                DrawFilterButton(ref _filter.RigidbodyFilter, "Rigidbody");
 
-                bool newShowInactiveObjects = EditorGUILayout.ToggleLeft("Show Inactive", _showInactiveObjects);
-                if (newShowInactiveObjects != _showInactiveObjects)
+                bool newShowInactive = EditorGUILayout.ToggleLeft("Show Inactive", _filter.ShowInactive);
+                if (newShowInactive != _filter.ShowInactive)
                 {
-                    _showInactiveObjects = newShowInactiveObjects;
-                    RefreshGameObjectList();
+                    _filter.ShowInactive = newShowInactive;
+                    RefreshList();
                 }
 
                 GUILayout.EndHorizontal();
@@ -106,10 +108,101 @@ namespace Editor.CustomEditorTools
             }
         }
 
-        private void DrawFilterToggle(ref FilterMode filter, string label)
+        private void DrawSortingOptions()
+        {
+            GUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField("Sort By:", EditorStyles.boldLabel, GUILayout.Width(50));
+            SortType newSort = (SortType)EditorGUILayout.EnumPopup(_sortType, GUILayout.Width(150));
+            if (newSort != _sortType)
+            {
+                _sortType = newSort;
+                RefreshList();
+            }
+            GUILayout.EndHorizontal();
+        }
+
+        private void DrawSelectionToggle()
+        {
+            bool newToggle = EditorGUILayout.ToggleLeft("Select All", _selectAllToggle);
+            if (newToggle != _selectAllToggle)
+            {
+                _selectAllToggle = newToggle;
+                _selectedObjects = _selectAllToggle 
+                    ? new List<GameObject>(_allObjects) 
+                    : new List<GameObject>();
+            }
+        }
+
+        private void DrawTableHeaders()
+        {
+            GUILayout.BeginHorizontal("box", GUILayout.Height(20));
+            GUILayout.Label("Select", EditorStyles.boldLabel, GUILayout.Width(50));
+            GUILayout.Label("Name", EditorStyles.boldLabel, GUILayout.Width(150));
+            GUILayout.Label("Active", EditorStyles.boldLabel, GUILayout.Width(50));
+            GUILayout.Label("Tag", EditorStyles.boldLabel, GUILayout.Width(90));
+            GUILayout.Label("Layer", EditorStyles.boldLabel, GUILayout.Width(90));
+            GUILayout.EndHorizontal();
+        }
+
+        private void DrawGameObjectRow(GameObject obj)
+        {
+            GUILayout.BeginHorizontal("box", GUILayout.Height(18));
+
+            // -- Selection Toggle --
+            bool isSelected = _selectedObjects.Contains(obj);
+            bool newSelect  = EditorGUILayout.Toggle(isSelected, GUILayout.Width(50));
+            if (newSelect != isSelected)
+            {
+                if (newSelect) _selectedObjects.Add(obj);
+                else _selectedObjects.Remove(obj);
+            }
+
+            // -- Name --
+            GUIContent nameContent = new GUIContent(obj.name, obj.name);
+            GUILayout.Label(nameContent, GUILayout.Width(150));
+
+            // -- Active Toggle --
+            bool newActive = EditorGUILayout.Toggle(obj.activeSelf, GUILayout.Width(50));
+            if (newActive != obj.activeSelf)
+            {
+                Undo.RecordObject(obj, "Toggle Active State");
+                obj.SetActive(newActive);
+                EditorUtility.SetDirty(obj);
+            }
+
+            // -- Tag Dropdown --
+            string newTag = EditorGUILayout.TagField(obj.tag, GUILayout.Width(90));
+            if (!obj.CompareTag(newTag))
+            {
+                Undo.RecordObject(obj, "Change Tag");
+                obj.tag = newTag;
+                EditorUtility.SetDirty(obj);
+            }
+
+            // -- Layer Dropdown --
+            int newLayer = EditorGUILayout.LayerField(obj.layer, GUILayout.Width(90));
+            if (newLayer != obj.layer)
+            {
+                Undo.RecordObject(obj, "Change Layer");
+                obj.layer = newLayer;
+                EditorUtility.SetDirty(obj);
+            }
+
+            GUILayout.EndHorizontal();
+        }
+
+        private void RefreshList()
+        {
+            _allObjects = _dataService.GetFilteredAndSortedGameObjects(_filter, _sortType);
+            // Keep only those still valid after refresh
+            _selectedObjects = new List<GameObject>(_selectedObjects.Intersect(_allObjects));
+        }
+
+        private void DrawFilterButton(ref FilterMode filterMode, string label)
         {
             GUIStyle style = new GUIStyle(GUI.skin.button);
-            switch (filter)
+
+            switch (filterMode)
             {
                 case FilterMode.NoFilter:
                     style.normal.textColor = Color.gray;
@@ -124,170 +217,8 @@ namespace Editor.CustomEditorTools
 
             if (GUILayout.Button(label, style))
             {
-                filter = (FilterMode)(((int)filter + 1) % 3);
-                RefreshGameObjectList();
-            }
-        }
-
-        private void DrawSortingOptions()
-        {
-            GUILayout.BeginHorizontal();
-            EditorGUILayout.LabelField("Sort By:", EditorStyles.boldLabel, GUILayout.Width(50));
-            SortType newSort = (SortType)EditorGUILayout.EnumPopup(_currentSort, GUILayout.Width(150));
-
-            if (newSort != _currentSort)
-            {
-                _currentSort = newSort;
-                SortGameObjects();
-            }
-            GUILayout.EndHorizontal();
-        }
-
-        private void DrawSelectionToggle()
-        {
-            bool newSelectAllToggle = EditorGUILayout.ToggleLeft("Select All", _selectAllToggle);
-            if (newSelectAllToggle != _selectAllToggle)
-            {
-                _selectAllToggle = newSelectAllToggle;
-                _selectedObjects = _selectAllToggle ? new List<GameObject>(_allObjects) : new List<GameObject>();
-            }
-        }
-        
-        private void DrawTableHeaders()
-        {
-            GUILayout.BeginHorizontal("box", GUILayout.Height(20));
-            GUILayout.Label("Select", EditorStyles.boldLabel, GUILayout.Width(50));
-            GUILayout.Label("Name", EditorStyles.boldLabel, GUILayout.Width(150));
-            GUILayout.Label("Active", EditorStyles.boldLabel, GUILayout.Width(50));
-            GUILayout.Label("Tag", EditorStyles.boldLabel, GUILayout.Width(90));
-            GUILayout.Label("Layer", EditorStyles.boldLabel, GUILayout.Width(90));
-            GUILayout.EndHorizontal();
-        }
-
-        private void DrawGameObjectRow(GameObject obj)
-        {
-            if (!PassesFilter(obj)) return;
-
-            GUILayout.BeginHorizontal("box", GUILayout.Height(18));
-
-            // **Selection Toggle**
-            bool isSelected = _selectedObjects.Contains(obj);
-            bool newSelectionState = EditorGUILayout.Toggle(isSelected, GUILayout.Width(50));
-            if (newSelectionState != isSelected)
-            {
-                if (newSelectionState)
-                    _selectedObjects.Add(obj);
-                else
-                    _selectedObjects.Remove(obj);
-            }
-
-            // **GameObject Name**
-            GUIContent nameContent = new GUIContent(obj.name, obj.name);
-            GUILayout.Label(nameContent, GUILayout.Width(150));
-
-            // **Active Toggle**
-            bool newActiveState = EditorGUILayout.Toggle(obj.activeSelf, GUILayout.Width(50));
-            if (newActiveState != obj.activeSelf)
-            {
-                Undo.RecordObject(obj, "Toggle Active State");
-                obj.SetActive(newActiveState);
-                EditorUtility.SetDirty(obj);
-            }
-
-            // **Tag Dropdown**
-            string newTag = EditorGUILayout.TagField(obj.tag, GUILayout.Width(90));
-            if (!obj.CompareTag(newTag))
-            {
-                Undo.RecordObject(obj, "Change Tag");
-                obj.tag = newTag;
-                EditorUtility.SetDirty(obj);
-            }
-
-            // **Layer Dropdown**
-            int newLayer = EditorGUILayout.LayerField(obj.layer, GUILayout.Width(90));
-            if (newLayer != obj.layer)
-            {
-                Undo.RecordObject(obj, "Change Layer");
-                obj.layer = newLayer;
-                EditorUtility.SetDirty(obj);
-            }
-
-            GUILayout.EndHorizontal();
-        }
-
-
-        private void RefreshGameObjectList()
-        {
-            _allObjects.Clear();
-            GameObject[] allGameObjects = Object.FindObjectsByType<GameObject>(FindObjectsSortMode.None);
-
-            foreach (GameObject obj in allGameObjects)
-            {
-                if (obj.transform.parent == null)
-                    CollectGameObjectsRecursively(obj);
-            }
-
-            _selectedObjects = _selectedObjects.Where(obj => _allObjects.Contains(obj)).ToList();
-            SortGameObjects();
-        }
-
-        private void CollectGameObjectsRecursively(GameObject obj)
-        {
-            if (PassesFilter(obj))
-            {
-                _allObjects.Add(obj);
-            }
-
-            foreach (Transform child in obj.transform)
-            {
-                CollectGameObjectsRecursively(child.gameObject);
-            }
-        }
-
-        private bool PassesFilter(GameObject obj)
-        {
-            if (!_showInactiveObjects && !obj.activeInHierarchy) return false;
-            if (!string.IsNullOrEmpty(_searchQuery) && !obj.name.ToLower().Contains(_searchQuery.ToLower())) return false;
-
-            if (!MatchesFilter(obj.GetComponent<MeshRenderer>(), _filterMeshRenderer)) return false;
-            if (!MatchesFilter(obj.GetComponent<Collider>(), _filterCollider)) return false;
-            if (!MatchesFilter(obj.GetComponent<Rigidbody>(), _filterRigidbody)) return false;
-
-            return true;
-        }
-
-        private bool MatchesFilter<T>(T component, FilterMode filter) where T : Component
-        {
-            return filter switch
-            {
-                FilterMode.HasComponent => component != null,
-                FilterMode.DoesNotHaveComponent => component == null,
-                _ => true
-            };
-        }
-
-        private void SortGameObjects()
-        {
-            switch (_currentSort)
-            {
-                case SortType.AlphabeticalAz:
-                    _allObjects = _allObjects.OrderBy(obj => obj.name).ToList();
-                    break;
-                case SortType.AlphabeticalZa:
-                    _allObjects = _allObjects.OrderByDescending(obj => obj.name).ToList();
-                    break;
-                case SortType.ActiveFirst:
-                    _allObjects = _allObjects.OrderByDescending(obj => obj.activeSelf).ToList();
-                    break;
-                case SortType.InactiveFirst:
-                    _allObjects = _allObjects.OrderBy(obj => obj.activeSelf).ToList();
-                    break;
-                case SortType.Tag:
-                    _allObjects = _allObjects.OrderBy(obj => obj.tag).ToList();
-                    break;
-                case SortType.Layer:
-                    _allObjects = _allObjects.OrderBy(obj => obj.layer).ToList();
-                    break;
+                filterMode = (FilterMode)(((int)filterMode + 1) % 3);
+                RefreshList();
             }
         }
     }

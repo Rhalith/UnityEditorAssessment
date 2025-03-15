@@ -1,59 +1,81 @@
-using UnityEngine;
 using UnityEditor;
+using UnityEngine;
 using System.Collections.Generic;
 
 namespace Editor.CustomEditorTools
 {
+    /// <summary>
+    /// Popup window for editing a list of GameObjects (transform + active state).
+    /// </summary>
     public class GameObjectEditPopup : EditorWindow
     {
-        private static List<GameObject> _selectedObjects = new();
-        private Vector3 _position, _rotation, _scale;
-        private readonly List<string> _changeHistory = new();
-        private readonly Stack<string> _undoStack = new();
-        private readonly Stack<string> _redoStack = new();
-        private Vector2 _scrollPosition;
-        private bool _changesPending;
-        private bool _isActive;
-        private bool _showTransform = true;
-        private bool _showHistory = true;
-        private bool _canUndo;
-        private bool _canRedo;
+        // --- Static references (shared across instance) ---
+        private static List<GameObject> _selectedObjects;
+        private static ChangeHistoryManager _history;
+        private static GameObjectEditController _editController;
 
+        // --- Editable fields ---
+        private Vector3 _position, _rotation, _scale;
+        private bool _isActive;
+        private bool _changesPending;
+
+        // --- UI Toggles ---
+        private bool _showTransform = true;
+        private bool _showHistory   = true;
+        private Vector2 _scrollPosition;
+
+        // --- Local convenience flags for Undo/Redo ---
+        private bool _canUndo => _history?.CanUndo ?? false;
+        private bool _canRedo => _history?.CanRedo ?? false;
+
+        /// <summary>
+        /// Opens the popup for editing the given list of GameObjects.
+        /// </summary>
         public static void Open(List<GameObject> objects)
         {
             if (objects == null || objects.Count == 0) return;
 
             GameObjectEditPopup window = GetWindow<GameObjectEditPopup>("Edit GameObjects", true);
-            _selectedObjects = new List<GameObject>(objects);
 
+            // Initialize static references
+            _selectedObjects = new List<GameObject>(objects);
+            _history         = new ChangeHistoryManager();
+            _editController  = new GameObjectEditController(_history);
+
+            // Position the popup near the center
             Rect main = EditorGUIUtility.GetMainWindowPosition();
             float centerX = main.x + (main.width - 500) / 2;
             float centerY = main.y + (main.height - 450) / 2;
             window.position = new Rect(centerX, centerY, 500, 450);
 
             window.InitializeTransformValues();
-            Undo.undoRedoPerformed += window.OnUndoRedo;
-            window.UpdateUndoRedoState();
+            Undo.undoRedoPerformed += window.OnUnityUndoRedo;
+
             window.Show();
+        }
+
+        private void OnDestroy()
+        {
+            Undo.undoRedoPerformed -= OnUnityUndoRedo;
         }
 
         private void InitializeTransformValues()
         {
             if (_selectedObjects.Count == 0) return;
 
+            // Initialize from the first object
             Transform firstTransform = _selectedObjects[0].transform;
             _position = firstTransform.position;
             _rotation = firstTransform.eulerAngles;
-            _scale = firstTransform.localScale;
+            _scale    = firstTransform.localScale;
             _isActive = _selectedObjects[0].activeSelf;
 
-            _changeHistory.Clear();
             _changesPending = false;
-            UpdateUndoRedoState();
         }
 
         private void OnGUI()
         {
+            // If objects are missing, close
             if (_selectedObjects == null || _selectedObjects.Count == 0)
             {
                 Close();
@@ -61,93 +83,83 @@ namespace Editor.CustomEditorTools
             }
 
             GUILayout.Space(10);
-            GUILayout.Label("Editing " + _selectedObjects.Count + " GameObjects", EditorStyles.boldLabel);
+            GUILayout.Label($"Editing {_selectedObjects.Count} GameObjects", EditorStyles.boldLabel);
             GUILayout.Space(10);
 
-            // **Active State Toggle**
+            // --- Active State Toggle ---
             bool newActiveState = EditorGUILayout.Toggle("Active", _isActive);
             if (newActiveState != _isActive)
             {
-                ToggleActiveState(newActiveState);
+                _editController.ToggleActive(_selectedObjects, newActiveState);
+                _isActive = newActiveState;
             }
 
             GUILayout.Space(10);
 
-            // **Transform Properties - Collapsible**
+            // --- Transform Properties (Foldout) ---
             _showTransform = EditorGUILayout.Foldout(_showTransform, "Transform Properties", true);
             if (_showTransform)
             {
                 GUILayout.BeginVertical("box");
-                Vector3 newPosition = EditorGUILayout.Vector3Field("Position", _position);
-                Vector3 newRotation = EditorGUILayout.Vector3Field("Rotation", _rotation);
-                Vector3 newScale = EditorGUILayout.Vector3Field("Scale", _scale);
+                Vector3 newPos = EditorGUILayout.Vector3Field("Position", _position);
+                Vector3 newRot = EditorGUILayout.Vector3Field("Rotation", _rotation);
+                Vector3 newScl = EditorGUILayout.Vector3Field("Scale", _scale);
                 GUILayout.EndVertical();
 
-                if (newPosition != _position || newRotation != _rotation || newScale != _scale)
+                if (newPos != _position || newRot != _rotation || newScl != _scale)
                 {
                     _changesPending = true;
-                    _position = newPosition;
-                    _rotation = newRotation;
-                    _scale = newScale;
+                    _position = newPos;
+                    _rotation = newRot;
+                    _scale    = newScl;
                 }
             }
 
             GUILayout.Space(10);
             GUILayout.BeginHorizontal();
-            
-            // **Undo Button**
+
+            // --- Undo Button ---
             GUI.enabled = _canUndo;
             if (GUILayout.Button("Undo", GUILayout.Height(30), GUILayout.Width(100)))
             {
                 EditorApplication.delayCall += () =>
                 {
-                    if (_undoStack.Count > 0)
+                    string undone = _history.Undo();
+                    if (!string.IsNullOrEmpty(undone))
                     {
-                        string lastChange = _undoStack.Pop();
-                        _redoStack.Push(lastChange);
-                        _changeHistory.Add($"Undo: {lastChange}");
                         Undo.PerformUndo();
+                        Repaint();
                     }
-
-                    UpdateUndoRedoState();
-                    Repaint();
                 };
             }
-
             GUI.enabled = true;
 
-            // **Redo Button**
+            // --- Redo Button ---
             GUI.enabled = _canRedo;
             if (GUILayout.Button("Redo", GUILayout.Height(30), GUILayout.Width(100)))
             {
                 EditorApplication.delayCall += () =>
                 {
-                    if (_redoStack.Count > 0)
+                    string redone = _history.Redo();
+                    if (!string.IsNullOrEmpty(redone))
                     {
-                        string lastRedo = _redoStack.Pop();
-                        _undoStack.Push(lastRedo);
-                        _changeHistory.Add($"Redo: {lastRedo}");
                         Undo.PerformRedo();
+                        Repaint();
                     }
-
-                    UpdateUndoRedoState();
-                    Repaint();
                 };
             }
-
             GUI.enabled = true;
-
 
             GUILayout.EndHorizontal();
             GUILayout.Space(10);
 
-            // **Apply Button**
+            // --- Apply Button ---
             GUI.enabled = _changesPending;
             if (GUILayout.Button("Apply Changes", GUILayout.Height(35)))
             {
-                ApplyChanges();
+                _editController.ApplyTransformChanges(_selectedObjects, _position, _rotation, _scale);
+                _changesPending = false;
             }
-
             GUI.enabled = true;
 
             if (GUILayout.Button("Close", GUILayout.Height(25)))
@@ -157,14 +169,14 @@ namespace Editor.CustomEditorTools
 
             GUILayout.Space(10);
 
-            // **Change History - Collapsible**
+            // --- Change History (Foldout) ---
             _showHistory = EditorGUILayout.Foldout(_showHistory, "Change History", true);
             if (_showHistory)
             {
                 GUILayout.BeginVertical("box", GUILayout.Height(150));
                 _scrollPosition = GUILayout.BeginScrollView(_scrollPosition, GUILayout.Height(130));
 
-                foreach (var change in _changeHistory)
+                foreach (var change in _history.ChangeHistory)
                 {
                     EditorGUILayout.LabelField("- " + change);
                 }
@@ -174,99 +186,17 @@ namespace Editor.CustomEditorTools
             }
         }
 
-        private void ApplyChanges()
+        private void OnUnityUndoRedo()
         {
-            if (_selectedObjects.Count == 0) return;
-
-            Undo.SetCurrentGroupName("Modify Multiple Transforms");
-            int undoGroup = Undo.GetCurrentGroup();
-
-            foreach (GameObject obj in _selectedObjects)
-            {
-                Undo.RecordObject(obj.transform, "Modify Transform");
-                obj.transform.position = _position;
-                obj.transform.rotation = Quaternion.Euler(_rotation);
-                obj.transform.localScale = _scale;
-                EditorUtility.SetDirty(obj);
-            }
-
-            Undo.CollapseUndoOperations(undoGroup);
-
-            string appliedChange =
-                $"Applied Changes to {_selectedObjects.Count} Objects (P:{_position}, R:{_rotation}, S:{_scale})";
-            _undoStack.Push(appliedChange); // 🔥 Push the change to Undo stack
-            _redoStack.Clear(); // 🔥 Clear redo stack on new change
-            _changeHistory.Add(appliedChange);
-            _changesPending = false;
-
-            UpdateUndoRedoState(); // 🔥 Update button states
-        }
-
-
-        private void ToggleActiveState(bool newState)
-        {
-            if (_selectedObjects.Count == 0) return;
-
-            Undo.SetCurrentGroupName("Toggle Active State");
-            int undoGroup = Undo.GetCurrentGroup();
-
-            foreach (GameObject obj in _selectedObjects)
-            {
-                Undo.RecordObject(obj, "Toggle Active");
-                obj.SetActive(newState);
-                EditorUtility.SetDirty(obj);
-            }
-
-            Undo.CollapseUndoOperations(undoGroup);
-
-            _isActive = newState;
-
-            string activeStateChange = newState ? "Set Active" : "Set Inactive";
-            _changeHistory.Add(activeStateChange);
-
-            UpdateUndoRedoState();
-            Repaint();
-        }
-
-        private void LogUndoRedoChange(string action)
-        {
+            // If external Unity undo/redo was triggered, we simply refresh displayed transforms
             if (_selectedObjects.Count == 0) return;
 
             _position = _selectedObjects[0].transform.position;
             _rotation = _selectedObjects[0].transform.eulerAngles;
-            _scale = _selectedObjects[0].transform.localScale;
+            _scale    = _selectedObjects[0].transform.localScale;
             _isActive = _selectedObjects[0].activeSelf;
 
-            string logEntry = $"{action}: Position ({_position.x:F2}, {_position.y:F2}, {_position.z:F2}), " +
-                              $"Rotation ({_rotation.x:F2}, {_rotation.y:F2}, {_rotation.z:F2}), " +
-                              $"Scale ({_scale.x:F2}, {_scale.y:F2}, {_scale.z:F2})";
-
-            _changeHistory.Add(logEntry);
-        }
-
-        private void OnUndoRedo()
-        {
-            if (_selectedObjects.Count == 0) return;
-
-            _position = _selectedObjects[0].transform.position;
-            _rotation = _selectedObjects[0].transform.eulerAngles;
-            _scale = _selectedObjects[0].transform.localScale;
-            _isActive = _selectedObjects[0].activeSelf;
-
-            UpdateUndoRedoState();
             Repaint();
-        }
-
-
-        private void UpdateUndoRedoState()
-        {
-            _canUndo = _undoStack.Count > 0;
-            _canRedo = _redoStack.Count > 0;
-        }
-
-        private void OnDestroy()
-        {
-            Undo.undoRedoPerformed -= OnUndoRedo;
         }
     }
 }
