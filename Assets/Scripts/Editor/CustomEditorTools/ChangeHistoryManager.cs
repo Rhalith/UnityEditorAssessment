@@ -27,7 +27,7 @@ namespace Editor.CustomEditorTools
         }
 
         /// <summary>
-        /// Adds an entry to the change history (without pushing to Undo stack).
+        /// Adds an entry to the change history (without pushing to the Undo stack).
         /// </summary>
         public void AddToHistory(string record)
         {

@@ -1,5 +1,6 @@
 using UnityEngine;
 using System.Collections.Generic;
+using Editor.CustomEditorTools.FilterAndSort;
 
 namespace Editor.CustomEditorTools
 {
@@ -15,14 +16,16 @@ namespace Editor.CustomEditorTools
         public List<GameObject> GetFilteredAndSortedGameObjects(GameObjectFilter filter, SortType sortType)
         {
             List<GameObject> allObjects = new List<GameObject>();
-            
+
             GameObject[] sceneObjects = Object.FindObjectsByType<GameObject>(FindObjectsSortMode.None);
 
             // Add only root objects, then recursively add children
             foreach (GameObject root in sceneObjects)
             {
-                if (root.transform.parent == null)
+                if (!root.transform.parent)
+                {
                     CollectRecursively(root, filter, allObjects);
+                }
             }
 
             // Sort results
@@ -33,7 +36,9 @@ namespace Editor.CustomEditorTools
         private void CollectRecursively(GameObject obj, GameObjectFilter filter, List<GameObject> results)
         {
             if (filter.Matches(obj))
+            {
                 results.Add(obj);
+            }
 
             foreach (Transform child in obj.transform)
             {

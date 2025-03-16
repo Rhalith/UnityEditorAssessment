@@ -1,5 +1,6 @@
 using UnityEditor;
 using UnityEngine;
+using System;
 using System.Collections.Generic;
 
 namespace Editor.CustomEditorTools
@@ -37,8 +38,7 @@ namespace Editor.CustomEditorTools
 
             Undo.CollapseUndoOperations(undoGroup);
 
-            string description = 
-                $"Applied Changes to {objects.Count} Objects (P:{position}, R:{rotation}, S:{scale})";
+            string description = $"Applied Changes to {objects.Count} Objects (P:{position}, R:{rotation}, S:{scale})";
             _history.RecordChange(description);
         }
 
@@ -63,6 +63,54 @@ namespace Editor.CustomEditorTools
 
             string changeDesc = newState ? "Set Active" : "Set Inactive";
             _history.AddToHistory(changeDesc);
+        }
+
+        /// <summary>
+        /// Adds a component (by System.Type) to each selected GameObject.
+        /// </summary>
+        public void AddComponentToAll(List<GameObject> objects, Type componentType)
+        {
+            if (objects == null || objects.Count == 0 || componentType == null) return;
+
+            Undo.SetCurrentGroupName("Add Component");
+            int undoGroup = Undo.GetCurrentGroup();
+
+            foreach (GameObject gameObject in objects)
+            {
+                Undo.AddComponent(gameObject, componentType);
+                EditorUtility.SetDirty(gameObject);
+            }
+
+            Undo.CollapseUndoOperations(undoGroup);
+
+            _history.RecordChange($"Added Component '{componentType.FullName}' to {objects.Count} objects");
+        }
+
+        /// <summary>
+        /// Removes a component (by System.Type) from each selected GameObject.
+        /// Removes all instances if multiple exist.
+        /// </summary>
+        public void RemoveComponentFromAll(List<GameObject> objects, Type componentType)
+        {
+            if (objects == null || objects.Count == 0 || componentType == null) return;
+
+            Undo.SetCurrentGroupName("Remove Component");
+            int undoGroup = Undo.GetCurrentGroup();
+
+            foreach (GameObject gameObject in objects)
+            {
+                var components = gameObject.GetComponents(componentType);
+                foreach (var c in components)
+                {
+                    Undo.DestroyObjectImmediate(c);
+                }
+
+                EditorUtility.SetDirty(gameObject);
+            }
+
+            Undo.CollapseUndoOperations(undoGroup);
+
+            _history.RecordChange($"Removed Component '{componentType.FullName}' from {objects.Count} objects");
         }
     }
 }
