@@ -107,4 +107,3 @@ This project is licensed under the **MIT License**.
 For inquiries, feel free to reach out:  
 📧 Email: [akmannuhyigit@gmail.com](mailto:akmannuhyigit@gmail.com)  
 👨‍💻 GitHub: [Rhalith](https://github.com/Rhalith)
-```
